@@ -1,68 +1,97 @@
-const Database = require('better-sqlite3')
-const db = new Database('maktab.db')
+const sqlite3 = require('sqlite3').verbose()
+const db = new sqlite3.Database('maktab.db')
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS students (
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS students (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name     TEXT NOT NULL,
     class_name    TEXT,
     parent_phone  TEXT,
     parent_tg_id  INTEGER,
     parent_username TEXT
-  );
+  )`)
 
-  CREATE TABLE IF NOT EXISTS parents (
+  db.run(`CREATE TABLE IF NOT EXISTS parents (
     tg_id       INTEGER PRIMARY KEY,
     full_name   TEXT,
     phone       TEXT,
     username    TEXT,
     student_id  INTEGER
-  );
+  )`)
 
-  CREATE TABLE IF NOT EXISTS notifications (
+  db.run(`CREATE TABLE IF NOT EXISTS notifications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     student_id  INTEGER,
     message     TEXT,
     sent_tg     INTEGER DEFAULT 0,
     sent_sms    INTEGER DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`)
+  )`)
+})
 
-function addStudent(fullName, className, parentPhone = null) {
-  const stmt = db.prepare(
-    'INSERT INTO students (full_name, class_name, parent_phone) VALUES (?, ?, ?)'
+function run(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err)
+      else resolve(this)
+    })
+  })
+}
+
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err)
+      else resolve(row)
+    })
+  })
+}
+
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err)
+      else resolve(rows)
+    })
+  })
+}
+
+async function addStudent(fullName, className, parentPhone = null) {
+  const res = await run(
+    'INSERT INTO students (full_name, class_name, parent_phone) VALUES (?, ?, ?)',
+    [fullName, className, parentPhone]
   )
-  const info = stmt.run(fullName, className, parentPhone)
-  return info.lastInsertRowid
+  return res.lastID
 }
 
-function getAllStudents() {
-  return db.prepare('SELECT * FROM students ORDER BY class_name, full_name').all()
+async function getAllStudents() {
+  return await all('SELECT * FROM students ORDER BY class_name, full_name')
 }
 
-function searchStudents(query) {
-  return db.prepare(
-    'SELECT * FROM students WHERE full_name LIKE ? OR class_name LIKE ?'
-  ).all(`%${query}%`, `%${query}%`)
+async function searchStudents(query) {
+  return await all(
+    'SELECT * FROM students WHERE full_name LIKE ? OR class_name LIKE ?',
+    [`%${query}%`, `%${query}%`]
+  )
 }
 
-function getStudentById(id) {
-  return db.prepare('SELECT * FROM students WHERE id = ?').get(id)
+async function getStudentById(id) {
+  return await get('SELECT * FROM students WHERE id = ?', [id])
 }
 
-function updateStudentParent(studentId, tgId, username, phone) {
-  db.prepare(
-    'UPDATE students SET parent_tg_id=?, parent_username=?, parent_phone=? WHERE id=?'
-  ).run(tgId, username, phone, studentId)
+async function updateStudentParent(studentId, tgId, username, phone) {
+  await run(
+    'UPDATE students SET parent_tg_id=?, parent_username=?, parent_phone=? WHERE id=?',
+    [tgId, username, phone, studentId]
+  )
 }
 
-function deleteStudent(id) {
-  db.prepare('DELETE FROM students WHERE id = ?').run(id)
+async function deleteStudent(id) {
+  await run('DELETE FROM students WHERE id = ?', [id])
 }
 
-function registerParent(tgId, fullName, phone, username, studentId) {
-  db.prepare(`
+async function registerParent(tgId, fullName, phone, username, studentId) {
+  await run(`
     INSERT INTO parents (tg_id, full_name, phone, username, student_id)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(tg_id) DO UPDATE SET
@@ -70,17 +99,18 @@ function registerParent(tgId, fullName, phone, username, studentId) {
       phone=excluded.phone,
       username=excluded.username,
       student_id=excluded.student_id
-  `).run(tgId, fullName, phone, username, studentId)
+  `, [tgId, fullName, phone, username, studentId])
 }
 
-function getParentByTgId(tgId) {
-  return db.prepare('SELECT * FROM parents WHERE tg_id = ?').get(tgId)
+async function getParentByTgId(tgId) {
+  return await get('SELECT * FROM parents WHERE tg_id = ?', [tgId])
 }
 
-function logNotification(studentId, message, sentTg, sentSms) {
-  db.prepare(
-    'INSERT INTO notifications (student_id, message, sent_tg, sent_sms) VALUES (?, ?, ?, ?)'
-  ).run(studentId, message, sentTg ? 1 : 0, sentSms ? 1 : 0)
+async function logNotification(studentId, message, sentTg, sentSms) {
+  await run(
+    'INSERT INTO notifications (student_id, message, sent_tg, sent_sms) VALUES (?, ?, ?, ?)',
+    [studentId, message, sentTg ? 1 : 0, sentSms ? 1 : 0]
+  )
 }
 
 module.exports = {
