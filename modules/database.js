@@ -1,7 +1,18 @@
-const sqlite3 = require('sqlite3').verbose()
-const db = new sqlite3.Database('maktab.db')
+const initSqlJs = require('sql.js')
+const fs = require('fs')
 
-db.serialize(() => {
+const DB_PATH = './maktab.db'
+let db
+
+async function init() {
+  const SQL = await initSqlJs()
+  if (fs.existsSync(DB_PATH)) {
+    const fileBuffer = fs.readFileSync(DB_PATH)
+    db = new SQL.Database(fileBuffer)
+  } else {
+    db = new SQL.Database()
+  }
+
   db.run(`CREATE TABLE IF NOT EXISTS students (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name     TEXT NOT NULL,
@@ -27,93 +38,105 @@ db.serialize(() => {
     sent_sms    INTEGER DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
   )`)
-})
+
+  save()
+}
+
+function save() {
+  const data = db.export()
+  fs.writeFileSync(DB_PATH, Buffer.from(data))
+}
 
 function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) reject(err)
-      else resolve(this)
-    })
-  })
+  db.run(sql, params)
+  save()
 }
 
 function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err)
-      else resolve(row)
-    })
-  })
+  const stmt = db.prepare(sql)
+  stmt.bind(params)
+  if (stmt.step()) {
+    const row = stmt.getAsObject()
+    stmt.free()
+    return row
+  }
+  stmt.free()
+  return null
 }
 
 function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err)
-      else resolve(rows)
-    })
-  })
+  const stmt = db.prepare(sql)
+  stmt.bind(params)
+  const rows = []
+  while (stmt.step()) rows.push(stmt.getAsObject())
+  stmt.free()
+  return rows
 }
 
-async function addStudent(fullName, className, parentPhone = null) {
-  const res = await run(
+function addStudent(fullName, className, parentPhone = null) {
+  db.run(
     'INSERT INTO students (full_name, class_name, parent_phone) VALUES (?, ?, ?)',
     [fullName, className, parentPhone]
   )
-  return res.lastID
+  save()
+  const row = get('SELECT last_insert_rowid() as id')
+  return row.id
 }
 
-async function getAllStudents() {
-  return await all('SELECT * FROM students ORDER BY class_name, full_name')
+function getAllStudents() {
+  return all('SELECT * FROM students ORDER BY class_name, full_name')
 }
 
-async function searchStudents(query) {
-  return await all(
+function searchStudents(query) {
+  return all(
     'SELECT * FROM students WHERE full_name LIKE ? OR class_name LIKE ?',
     [`%${query}%`, `%${query}%`]
   )
 }
 
-async function getStudentById(id) {
-  return await get('SELECT * FROM students WHERE id = ?', [id])
+function getStudentById(id) {
+  return get('SELECT * FROM students WHERE id = ?', [id])
 }
 
-async function updateStudentParent(studentId, tgId, username, phone) {
-  await run(
+function updateStudentParent(studentId, tgId, username, phone) {
+  run(
     'UPDATE students SET parent_tg_id=?, parent_username=?, parent_phone=? WHERE id=?',
     [tgId, username, phone, studentId]
   )
 }
 
-async function deleteStudent(id) {
-  await run('DELETE FROM students WHERE id = ?', [id])
+function deleteStudent(id) {
+  run('DELETE FROM students WHERE id = ?', [id])
 }
 
-async function registerParent(tgId, fullName, phone, username, studentId) {
-  await run(`
-    INSERT INTO parents (tg_id, full_name, phone, username, student_id)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(tg_id) DO UPDATE SET
-      full_name=excluded.full_name,
-      phone=excluded.phone,
-      username=excluded.username,
-      student_id=excluded.student_id
-  `, [tgId, fullName, phone, username, studentId])
+function registerParent(tgId, fullName, phone, username, studentId) {
+  const existing = get('SELECT * FROM parents WHERE tg_id = ?', [tgId])
+  if (existing) {
+    run(
+      'UPDATE parents SET full_name=?, phone=?, username=?, student_id=? WHERE tg_id=?',
+      [fullName, phone, username, studentId, tgId]
+    )
+  } else {
+    run(
+      'INSERT INTO parents (tg_id, full_name, phone, username, student_id) VALUES (?, ?, ?, ?, ?)',
+      [tgId, fullName, phone, username, studentId]
+    )
+  }
 }
 
-async function getParentByTgId(tgId) {
-  return await get('SELECT * FROM parents WHERE tg_id = ?', [tgId])
+function getParentByTgId(tgId) {
+  return get('SELECT * FROM parents WHERE tg_id = ?', [tgId])
 }
 
-async function logNotification(studentId, message, sentTg, sentSms) {
-  await run(
+function logNotification(studentId, message, sentTg, sentSms) {
+  run(
     'INSERT INTO notifications (student_id, message, sent_tg, sent_sms) VALUES (?, ?, ?, ?)',
     [studentId, message, sentTg ? 1 : 0, sentSms ? 1 : 0]
   )
 }
 
 module.exports = {
+  init,
   addStudent,
   getAllStudents,
   searchStudents,
@@ -123,4 +146,4 @@ module.exports = {
   registerParent,
   getParentByTgId,
   logNotification,
-}
+       }
